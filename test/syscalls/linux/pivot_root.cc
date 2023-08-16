@@ -397,6 +397,19 @@ TEST(PivotRootTest, OnRootFS) {
   SKIP_IF(!ASSERT_NO_ERRNO_AND_VALUE(HaveCapability(CAP_SYS_ADMIN)));
   SKIP_IF(!ASSERT_NO_ERRNO_AND_VALUE(HaveCapability(CAP_SYS_CHROOT)));
 
+  std::vector<ProcMountInfoEntry> mounts =
+      ASSERT_NO_ERRNO_AND_VALUE(ProcSelfMountInfoEntries());
+  std::string opt1, opt2, opt3;
+  bool rootFSFound = false;
+  for (const auto& e : mounts) {
+    if (e.mount_point == "/" && e.id == e.parent_id) {
+      rootFSFound = true;
+      break;
+    }
+  }
+
+  SKIP_IF(!rootFSFound);
+
   auto new_root = ASSERT_NO_ERRNO_AND_VALUE(TempPath::CreateDir());
   const std::string new_root_path = new_root.path();
   EXPECT_THAT(mount("", new_root_path.c_str(), "tmpfs", 0, "mode=0700"),

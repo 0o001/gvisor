@@ -199,8 +199,7 @@ func setupContainerVFS(ctx context.Context, info *containerInfo, mntr *container
 	}
 	procArgs.MountNamespace = mns
 
-	mnsRoot := mns.Root()
-	mnsRoot.IncRef()
+	mnsRoot := mns.Root(rootCtx)
 	defer mnsRoot.DecRef(rootCtx)
 
 	if err := createDeviceFiles(rootCtx, rootCreds, info, mntr.k.VFS(), mnsRoot); err != nil {
@@ -436,8 +435,7 @@ func (c *containerMounter) mountAll(rootCtx context.Context, rootCreds *auth.Cre
 	}
 	rootProcArgs.MountNamespace = mns
 
-	root := mns.Root()
-	root.IncRef()
+	root := mns.Root(rootCtx)
 	defer root.DecRef(rootCtx)
 	if root.Mount().ReadOnly() {
 		// Switch to ReadWrite while we setup submounts.
@@ -504,10 +502,32 @@ func (c *containerMounter) createMountNamespace(ctx context.Context, conf *confi
 		fsName = overlay.Name
 	}
 
-	mns, err := c.k.VFS().NewMountNamespace(ctx, creds, "", fsName, opts, c.k)
+	// The namespace root mount can't be changed, so let's mount a dummy
+	// read-only tmpfs here. It simplifies creation of containers without
+	// leaking the root file system.
+	mns, err := c.k.VFS().NewMountNamespace(ctx, creds, "rootfs", "tmpfs",
+		&vfs.MountOptions{ReadOnly: true}, c.k)
 	if err != nil {
 		return nil, fmt.Errorf("setting up mount namespace: %w", err)
 	}
+	defer mns.DecRef(ctx)
+
+	mnt, err := c.k.VFS().MountDisconnected(ctx, creds, "root", fsName, opts)
+	if err != nil {
+		return nil, fmt.Errorf("creating root file system: %w", err)
+	}
+	defer mnt.DecRef(ctx)
+	root := mns.Root(ctx)
+	defer root.DecRef(ctx)
+	target := &vfs.PathOperation{
+		Root:  root,
+		Start: root,
+	}
+	if err := c.k.VFS().ConnectMountAt(ctx, creds, mnt, target); err != nil {
+		return nil, fmt.Errorf("mounting root file system: %w", err)
+	}
+
+	mns.IncRef()
 	return mns, nil
 }
 
@@ -756,8 +776,7 @@ func (c *containerMounter) mountSubmount(ctx context.Context, conf *config.Confi
 		fsName = overlay.Name
 	}
 
-	root := mns.Root()
-	root.IncRef()
+	root := mns.Root(ctx)
 	defer root.DecRef(ctx)
 	target := &vfs.PathOperation{
 		Root:  root,
@@ -886,8 +905,7 @@ func (c *containerMounter) mountTmp(ctx context.Context, conf *config.Config, cr
 		}
 	}
 
-	root := mns.Root()
-	root.IncRef()
+	root := mns.Root(ctx)
 	defer root.DecRef(ctx)
 	pop := vfs.PathOperation{
 		Root:  root,
@@ -994,8 +1012,7 @@ func (c *containerMounter) mountSharedSubmount(ctx context.Context, conf *config
 	newMnt := c.k.VFS().NewDisconnectedMount(source.vfsMount.Filesystem(), source.vfsMount.Root(), opts)
 	defer newMnt.DecRef(ctx)
 
-	root := mns.Root()
-	root.IncRef()
+	root := mns.Root(ctx)
 	defer root.DecRef(ctx)
 	target := &vfs.PathOperation{
 		Root:  root,
@@ -1015,8 +1032,7 @@ func (c *containerMounter) mountSharedSubmount(ctx context.Context, conf *config
 }
 
 func (c *containerMounter) makeMountPoint(ctx context.Context, creds *auth.Credentials, mns *vfs.MountNamespace, dest string) error {
-	root := mns.Root()
-	root.IncRef()
+	root := mns.Root(ctx)
 	defer root.DecRef(ctx)
 	target := &vfs.PathOperation{
 		Root:  root,
